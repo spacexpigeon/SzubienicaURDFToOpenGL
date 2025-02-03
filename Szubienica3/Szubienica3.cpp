@@ -1,16 +1,21 @@
-﻿#include <Windows.h>       
-#include <GL/glew.h>       
-#include <GLFW/glfw3.h>    
-#include <GL/glu.h>        
-#include <tinyxml2.h>     
+﻿#include <Windows.h>
+#include <GL/glew.h>
+#include <GLFW/glfw3.h>
+#include <GL/glu.h>
+
+#include <tinyxml2.h>
 #define TINYGLTF_IMPLEMENTATION
 #define STB_IMAGE_IMPLEMENTATION
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "tiny_gltf.h"
+
 #include <iostream>
 #include <string>
 #include <vector>
-#include <cstdlib>         
+#include <cstdlib>
+#include <cstring>
+#include <fstream>   
+
 
 struct URDFLink {
     std::string name;
@@ -29,7 +34,9 @@ struct URDFLink {
 
 static std::vector<URDFLink> g_links;
 
-static float ParseScaleAttribute(const char* scaleAttr) {
+
+static float ParseScaleAttribute(const char* scaleAttr)
+{
     if (!scaleAttr) {
         std::cerr << "[ParseScaleAttribute] Missing scale attribute. Defaulting to 1.0\n";
         return 1.0f;
@@ -39,7 +46,9 @@ static float ParseScaleAttribute(const char* scaleAttr) {
     return scale;
 }
 
-void LoadURDF(const std::string& urdfPath) {
+
+void LoadURDF(const std::string& urdfPath)
+{
     tinyxml2::XMLDocument doc;
     if (doc.LoadFile(urdfPath.c_str()) != tinyxml2::XML_SUCCESS) {
         std::cerr << "[LoadURDF] Failed to load URDF: " << urdfPath << std::endl;
@@ -77,7 +86,6 @@ void LoadURDF(const std::string& urdfPath) {
                     else {
                         std::cerr << "[LoadURDF] Mesh missing filename attribute.\n";
                     }
-
                     if (const char* sc = mesh->Attribute("scale")) {
                         float s = ParseScaleAttribute(sc);
                         urdfLink.scaleX = s;
@@ -98,11 +106,110 @@ void LoadURDF(const std::string& urdfPath) {
     MessageBoxA(NULL, "URDF loaded successfully!", "Info", MB_OK);
 }
 
-void RenderURDF() {
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+
+static void DrawPrimitiveImmediate(const tinygltf::Model& model,
+    const tinygltf::Primitive& primitive)
+{
+    if (primitive.indices < 0) {
+        return;
+    }
+
+    const tinygltf::Accessor& indexAccessor = model.accessors[size_t(primitive.indices)];
+    const tinygltf::BufferView& indexBufView = model.bufferViews[size_t(indexAccessor.bufferView)];
+    const tinygltf::Buffer& indexBuf = model.buffers[size_t(indexBufView.buffer)];
+
+    const unsigned char* indexData = indexBuf.data.data()
+        + indexBufView.byteOffset
+        + indexAccessor.byteOffset;
+
+    auto attrPosIt = primitive.attributes.find("POSITION");
+    if (attrPosIt == primitive.attributes.end()) {
+        return;
+    }
+
+    int posAccId = attrPosIt->second;
+    const tinygltf::Accessor& posAccessor = model.accessors[size_t(posAccId)];
+    const tinygltf::BufferView& posBufView = model.bufferViews[size_t(posAccessor.bufferView)];
+    const tinygltf::Buffer& posBuf = model.buffers[size_t(posBufView.buffer)];
+
+    const unsigned char* posData = posBuf.data.data()
+        + posBufView.byteOffset
+        + posAccessor.byteOffset;
+
+
+    glBegin(GL_TRIANGLES);
+
+
+    const size_t MAX_DEBUG = 10;
+    size_t printedCount = 0;
+
+    for (size_t i = 0; i < indexAccessor.count; i++) {
+
+        uint16_t idx = 0;
+        std::memcpy(&idx, indexData + i * sizeof(uint16_t), sizeof(uint16_t));
+
+        size_t vertexOffset = idx * 3; 
+
+        float vx, vy, vz;
+        std::memcpy(&vx, posData + (vertexOffset + 0) * sizeof(float), sizeof(float));
+        std::memcpy(&vy, posData + (vertexOffset + 1) * sizeof(float), sizeof(float));
+        std::memcpy(&vz, posData + (vertexOffset + 2) * sizeof(float), sizeof(float));
+/*/
+        if (printedCount < MAX_DEBUG) {
+            std::cout << "[DrawPrimitiveImmediate] i=" << i
+                << ", idx=" << idx
+                << " => (vx, vy, vz) = ("
+                << vx << ", " << vy << ", " << vz << ")\n";
+            printedCount++;
+        }
+        /*/
+        glVertex3f(vx, vy, vz);
+    }
+
+    if (indexAccessor.count > MAX_DEBUG) {
+        std::cout << "[DrawPrimitiveImmediate] (Printed first "
+            << MAX_DEBUG << " vertices of " << indexAccessor.count << " total.)\n";
+    }
+
+    glEnd();
+}
+
+static void RenderGltfModelImmediate(const tinygltf::Model& model)
+{
+    for (size_t m = 0; m < model.meshes.size(); m++) {
+        const tinygltf::Mesh& mesh = model.meshes[m];
+        for (size_t p = 0; p < mesh.primitives.size(); p++) {
+            const tinygltf::Primitive& primitive = mesh.primitives[p];
+            if (primitive.mode == TINYGLTF_MODE_TRIANGLES) {
+                DrawPrimitiveImmediate(model, primitive);
+            }
+        }
+    }
+}
+
+
+void RenderURDF()
+{
+
+    glDisable(GL_LIGHTING);
+    glDisable(GL_LIGHT0);
+
+    glColor3f(1.0f, 0.0f, 0.0f);
+
+
+    glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
 
     for (auto& link : g_links) {
-        std::cout << "[RenderURDF] Rendering link: " << link.name << "\n";
+        std::cout << "[RenderURDF] Rendering link: " << link.name << std::endl;
+
+        std::ifstream testFile(link.meshFile);
+        if (!testFile.good()) {
+            std::cerr << "[CheckFile] Could NOT open file: " << link.meshFile << "\n";
+        }
+        else {
+            std::cout << "[CheckFile] File " << link.meshFile << " is found.\n";
+        }
 
         if (!link.meshFile.empty()) {
             tinygltf::Model model;
@@ -116,36 +223,58 @@ void RenderURDF() {
                 continue;
             }
             else {
-                std::cout << "[LoadGLTF] Successfully loaded glTF: " << link.meshFile
+                std::cout << "[LoadGLTF] Successfully loaded glTF: "
+                    << link.meshFile
                     << " (nodes: " << model.nodes.size()
-                    << ", meshes: " << model.meshes.size() << ")\n";
+                    << ", meshes: " << model.meshes.size()
+                    << ")\n";
             }
 
-            // Debug: Sprawdzenie danych geometrii
-            for (const auto& mesh : model.meshes) {
-                std::cout << "[RenderURDF] Mesh: " << mesh.name
-                    << ", Primitives: " << mesh.primitives.size() << "\n";
-                for (const auto& primitive : mesh.primitives) {
-                    if (primitive.attributes.find("POSITION") != primitive.attributes.end()) {
-                        std::cout << "[RenderURDF] Primitive has POSITION attribute.\n";
-                    }
-                    else {
-                        std::cerr << "[RenderURDF] Primitive missing POSITION attribute!\n";
-                    }
-                }
-            }
+            glPushMatrix();
+
+      
+            glTranslatef(link.translationX, link.translationY, link.translationZ);
+
+            glRotatef(link.rotationAngle, link.rotationX, link.rotationY, link.rotationZ);
+
+            glScalef(link.scaleX, link.scaleY, link.scaleZ);
+
+          
+            glScalef(100.0f, 100.0f, 100.0f);
+
+            RenderGltfModelImmediate(model);
+
+            glPopMatrix();
+
         }
         else {
             std::cerr << "[RenderURDF] Link " << link.name << " has no mesh file.\n";
         }
     }
-
-    glfwSwapBuffers(glfwGetCurrentContext());
-    std::cout << "[RenderURDF] Rendering completed.\n";
+    std::cout << "[RenderURDF] Rendering completed." << std::endl;
 }
 
 
-bool InitializeOpenGL() {
+void SetupCamera()
+{
+    glMatrixMode(GL_PROJECTION);
+    glLoadIdentity();
+    gluPerspective(45.0, 800.0 / 600.0, 0.1, 250000.0);
+
+    glMatrixMode(GL_MODELVIEW);
+    glLoadIdentity();
+
+    gluLookAt(
+        65000.0, 11000.0, 10000.0,  // eye
+        0.0, 0.0, 0.0,   // center
+        0.0, 1.0, 0.0    // up
+    );
+    std::cout << "[SetupCamera] Camera setup completed.\n";
+}
+
+
+bool InitializeOpenGL()
+{
     if (!glfwInit()) {
         std::cerr << "[InitializeOpenGL] Failed to init GLFW.\n";
         return false;
@@ -170,38 +299,8 @@ bool InitializeOpenGL() {
     return true;
 }
 
-void SetupCamera() {
-    glMatrixMode(GL_PROJECTION);
-    glLoadIdentity();
-    gluPerspective(45.0, 800.0 / 600.0, 0.1, 1000.0);
-    //160x80
-    glMatrixMode(GL_MODELVIEW);
-    glLoadIdentity();
-    gluLookAt(0.0, 200.0, 500.0,   
-        0.0, 0.0, 0.0,       
-        0.0, 1.0, 0.0);      
-    std::cout << "[SetupCamera] Camera setup completed.\n";
-}
-
-void SetupLighting() {
-    glEnable(GL_LIGHTING);
-    glEnable(GL_LIGHT0);
-
-    GLfloat ambientLight[] = { 0.3f, 0.3f, 0.3f, 1.0f };
-    GLfloat diffuseLight[] = { 0.7f, 0.7f, 0.7f, 1.0f };
-    GLfloat lightPosition[] = { 200.0f, 200.0f, 200.0f, 1.0f };
-
-    glLightfv(GL_LIGHT0, GL_AMBIENT, ambientLight);
-    glLightfv(GL_LIGHT0, GL_DIFFUSE, diffuseLight);
-    glLightfv(GL_LIGHT0, GL_POSITION, lightPosition);
-
-    glEnable(GL_COLOR_MATERIAL);
-    glColorMaterial(GL_FRONT, GL_AMBIENT_AND_DIFFUSE);
-
-    std::cout << "[SetupLighting] Lighting setup completed.\n";
-}
-
-int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
+int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow)
+{
     AllocConsole();
     FILE* fp;
     freopen_s(&fp, "CONOUT$", "w", stdout);
@@ -213,16 +312,19 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         return -1;
     }
 
-    std::string urdfPath = "C:/Users/misko/source/repos/Szubienica3/x64/Debug/SzubienicaURDF/szub.urdf";
+    std::string urdfPath = "C:/Users/misko/Downloads/Grafika Projekt Pliki/Szubienica-Kielbasy-master/x64/Debug/Szubienica-Urdf-Plik-master/Szubienica-Urdf-Plik-master/szub.urdf";
     LoadURDF(urdfPath);
 
-    SetupLighting();
     SetupCamera();
-    RenderURDF();
 
+  
     GLFWwindow* window = glfwGetCurrentContext();
     while (!glfwWindowShouldClose(window)) {
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
+        RenderURDF();
+
+        glfwSwapBuffers(window);
         glfwPollEvents();
     }
 
